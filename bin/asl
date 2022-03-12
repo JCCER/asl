@@ -1,0 +1,266 @@
+#!/bin/sh
+
+##########################################
+#                                        #
+#          Script Name: asl              #
+#                                        #
+#          Github: colsro/asl            #
+#                                        #
+#          Author: Colsro                #
+#                                        #
+#          License: GPL-v3.0             #
+#                                        #
+##########################################
+
+VERSION="Ver.1.0.2"
+
+PATH=/data/asl/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ASL_UNSHARE=/data/asl/bin/unshare
+ASL_BUSYBOX=/data/asl/bin/busybox
+ASLFS=/data/asl/fs
+LOGDIR=/data/asl/log
+
+asllog()
+{
+    printf "[%s]:  %s \n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> /data/asl/log/asl.log
+}
+
+logclean()
+{
+    [ -d "${LOGDIR}" ] || mkdir -p ${LOGDIR}
+    [ -e "${LOGDIR}/asl.log" ] || touch ${LOGDIR}/asl.log
+    lognum=$(du ${LOGDIR}/asl.log | awk '{print $1}')
+    if [ "$lognum" -gt 1024 ]; then
+        mv ${LOGDIR}/asl.log $LOGDIR/asl_"$(date '+%y%m%d%H%M%S')".log.bak
+        touch ${LOGDIR}/asl.log
+        filenum=$(find ${LOGDIR} -maxdepth 1 -name '*.bak' |wc -l)
+        if [ "${filenum}" -gt 5 ]; then
+            find ${LOGDIR} -name "*.bak" -exec rm -rf {} \;
+            asllog "logclean: 已清理"
+        fi
+    else
+        asllog "logclean: 无事可做"
+    fi
+}
+
+mount_status()
+{
+    mount_var="$1"
+    #echo ${mount_var%/}
+    if grep -q " ${mount_var%/} " /proc/mounts; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+mount_path()
+{
+    for mounts in / /dev /proc /sys /dev/shm /dev/pts ;
+    do
+        if ! mount_status "${ASLFS}${mounts}"; then
+            case ${mounts} in
+                /)
+                    mount --rbind ${ASLFS} ${ASLFS}/     #我 挂 我 自 己 ∑(O_O；)
+                    mount -o remount,exec,suid,dev "${ASLFS}"
+                    asllog "挂载 ${mounts} 完成"
+                ;;
+                /dev)
+                    [ -d "${ASLFS}/dev" ] || mkdir -p "${ASLFS}/dev"
+                    mount -o bind /dev "${ASLFS}/dev"
+                    asllog "挂载 ${mounts} 完成"
+                ;;
+                /proc)
+                    [ -d "${ASLFS}/proc" ] || mkdir -p "${ASLFS}/proc"
+                    mount -t proc proc "${ASLFS}/proc"
+                    asllog "挂载 ${mounts} 完成"
+                ;;
+                /sys)
+                    [ -d "${ASLFS}/sys" ] || mkdir -p "${ASLFS}/sys"
+                    mount -t sysfs sys "${ASLFS}/sys"
+                    asllog "挂载 ${mounts} 完成"
+                ;;
+                /dev/shm)
+                    [ -d "/dev/shm" ] || mkdir -p /dev/shm
+                    mount -o rw,nosuid,nodev,mode=1777 -t tmpfs tmpfs /dev/shm
+                    [ -d "${ASLFS}/dev/shm" ] || mkdir -p ${ASLFS}/dev/shm
+                    mount -o bind /dev/shm "${ASLFS}/dev/shm"
+                    asllog "挂载 ${mounts} 完成"
+                ;;
+                /dev/pts)
+                    [ -d "/dev/pts" ] || mkdir -p /dev/pts
+                    mount -o rw,nosuid,noexec,gid=5,mode=620,ptmxmode=000 -t devpts devpts /dev/pts
+                    [ -d "${ASLFS}/dev/pts" ] || mkdir -p ${ASLFS}/dev/pts
+                    mount -o bind /dev/pts "${ASLFS}/dev/pts"
+                    asllog "挂载 ${mounts} 完成"
+                ;;
+            esac
+        else
+            asllog "${mounts} 已挂载，本次跳过。"
+        fi
+    done
+    unset mounts
+}
+
+mount_file()
+{
+    for mounts in /dev/fd /dev/stdin /dev/stout /dev/sterr /dev/tty0 /dev/ttyS0 /dev/net/tun;
+    do
+        if [ ! -e ${mounts} ] && [ ! -h ${mounts} ]; then
+            case ${mounts} in
+            /dev/fd)
+                ln -s /proc/self/fd ${mounts} >/dev/null 2>&1
+                asllog "创建 ${mounts} 完成"
+            ;;
+            /dev/stdin)
+                ln -s /proc/self/fd/0 ${mounts} >/dev/null 2>&1
+                asllog "创建 ${mounts} 完成"
+            ;;
+            /dev/stdout)
+                ln -s /proc/self/fd/1 ${mounts} >/dev/null 2>&1
+                asllog "创建 ${mounts} 完成"
+            ;;
+            /dev/stderr)
+                ln -s /proc/self/fd/2 ${mounts} >/dev/null 2>&1
+                asllog "创建 ${mounts} 完成"
+            ;;
+            /dev/tty0)
+                ln -s /dev/null ${mounts} >/dev/null 2>&1
+                asllog "创建 ${mounts} 完成"
+            ;;
+            /dev/ttyS0)
+                ln -s /dev/null ${mounts} >/dev/null 2>&1
+                asllog "创建 ${mounts} 完成"
+            ;;
+            /dev/net/tun)
+                [ -d "/dev/net" ] || mkdir -p /dev/net
+                mknod /dev/net/tun c 10 200
+                asllog "创建 ${mounts} 完成"
+            ;;
+            esac
+        else
+            asllog "${mounts} 已存在，本次跳过"
+        fi
+    done
+    unset mounts
+}
+
+unmount_asl()
+{
+    printf "取消ASL挂载中。。。\n"
+    grep ${ASLFS} < /proc/mounts | awk '{print $2}' | while read -r umounts
+    do
+        umount -l "${umounts}" >/dev/null 2>&1
+        asllog "umount:${umounts}"
+        sleep 1
+    done
+}
+
+remove()
+{
+    if [ ! -e "/data/adb/modules/asl/remove" ]; then
+        touch /data/adb/modules/asl/remove
+        printf "asl将在下次重启后从您的设备移除\n再次输入 asl -r 取消移除。\n"
+    else
+        rm -f /data/adb/modules/asl/remove
+        printf "已撤销移除指令\n"
+    fi
+}
+
+asl_exec()
+{
+    mount_path
+    mount_file
+    unset TMP TEMP TMPDIR LD_PRELOAD LD_DEBUG
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin ${ASL_UNSHARE} -R "${ASLFS}" /bin/su - root -c "$*"
+}
+
+asl_sshd()
+{
+    pkill sshd
+    asllog "启动 SSH 服务"
+    mkdir -p ${ASLFS}/etc/init.d/
+    cat >${ASLFS}/etc/init.d/ssh<< sshEnd
+#!/bin/bash
+
+# Copyright (C) 2021 RvvcIm <i@rvvc.im>
+
+ssh_start()
+{
+    [ ! -f "/run/sshd.pid" ] || pkill sshd >/dev/null 
+    /usr/sbin/sshd
+}
+
+ssh_stop()
+{
+    pkill sshd
+}
+
+if [ ! "\$#" = 0 ]; then
+    INCMD="\$1"; shift
+fi
+
+case \${INCMD} in
+    start)
+        ssh_start
+    ;;
+    stop)
+        ssh_stop
+    ;;
+    *) printf "error\\n";;
+esac
+
+sshEnd
+    chmod +x ${ASLFS}/etc/init.d/ssh
+    if [ $(ls "${ASLFS}/etc/ssh/" | grep -c key) -eq 0 ]; then
+        asl_exec ssh-keygen -A >/dev/null
+    fi
+    asl_exec /etc/init.d/ssh "$@"
+}
+
+if [ ! "$#" = 0 ]; then
+    INCMD="$1"; shift
+fi
+
+case ${INCMD} in
+    --command|-c)
+        asl_exec "$@"
+    ;;
+    --login|-l)
+        asl_exec su -
+    ;;
+    --remove|-r)
+        remove
+    ;;
+    --rootfs|-R)
+        echo emm
+    ;;
+    --sshd|-s)
+        asl_sshd "$@"
+    ;;
+    --unmount|-u)
+        unmount_asl
+    ;;
+    --version|-v)
+        printf "\n ASL %s \n\n" "${VERSION}"
+    ;;
+    --debug)
+        printf "\ndebug: %s \n" "${*}"
+    ;;
+    --help|-h)
+        printf "
+    Android Subsystem of Linux\n
+    help:\n\
+         -c,--command      在 asl 容器内部执行命令\n\n\
+         -h,--help         显示 asl 帮助\n\n\
+         -l,--login        登录至 asl 容器内部\n\n\
+         -r,--remove       删除 asl 模块\n\n\
+         -v,--version      显示当前版本信息\n\
+\n"
+        ;;
+    *) printf "无事发生，试试输入 asl -h ？\n";;
+esac
+
+logclean
+
+exit 0
