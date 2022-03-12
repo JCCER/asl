@@ -1,0 +1,6 @@
+id=asl
+name=Android Subsystem for Linux
+version=Ver.1.0.3
+versionCode=103
+author=Colsro
+description=Android Subsystem for Linux (asl)，利用 Magisk 实现开机自动配置一个运行在 Android 上的 Linux 子系统（其实就是用了 unshare 2333）。
